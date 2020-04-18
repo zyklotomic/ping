@@ -416,7 +416,6 @@ fn recvmsg(sockfd: Socket,
     let msg_ptr = Box::into_raw(msg);
 
     loop {
-        println!("loop");
         let recv_res = unsafe {
             libc::recvmsg(sockfd, msg_ptr, libc::MSG_DONTWAIT)
         };
@@ -473,12 +472,18 @@ fn main() {
     // TODO: Future Improvements
     // 1) Hard-coded payload at the moment, may need a fundamental rewrite
     // to allow variable payload due to Rust compile-time requirements
+    //
     // 2) Clean up repetitive code with macros
+    //
     // 3) Memory Leaks, valgrind --tool=massif reports single instance of leak,
     // so, culprit is most likely ctrl-c handler
+    //
     // 4) Rust Duration does not support `Display` trait, does not allow to specify
     // reporting time statistics to a specified precision. Current statistics
     // report is misleading since precision is only up to 0.01ms due to sleep
+    //
+    // 5) Ipv6
+
     let matches = clap_app!(ping =>
         (version: "1.0.0")
         (author: "Ethan Tsz Hang Kiang @zyklotomic")
