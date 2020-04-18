@@ -416,6 +416,7 @@ fn recvmsg(sockfd: Socket,
     let msg_ptr = Box::into_raw(msg);
 
     loop {
+        println!("loop");
         let recv_res = unsafe {
             libc::recvmsg(sockfd, msg_ptr, libc::MSG_DONTWAIT)
         };
@@ -434,6 +435,9 @@ fn recvmsg(sockfd: Socket,
         if !running.load(Ordering::SeqCst) {
             return Err(Error::new(ErrorKind::Interrupted, ""));
         }
+
+        // Up to 0.01ms accuracy
+        std::thread::sleep(Duration::from_nanos(8000));
     }
 
     let elapsed = start_time.elapsed();
@@ -472,8 +476,9 @@ fn main() {
     // 2) Clean up repetitive code with macros
     // 3) Memory Leaks, valgrind --tool=massif reports single instance of leak,
     // so, culprit is most likely ctrl-c handler
-    // 4) Non-blocking sleep / async, lack of this causes SIGINT
-    // to have to wait until sleep is finished to exit.
+    // 4) Rust Duration does not support `Display` trait, does not allow to specify
+    // reporting time statistics to a specified precision. Current statistics
+    // report is misleading since precision is only up to 0.01ms due to sleep
     let matches = clap_app!(ping =>
         (version: "1.0.0")
         (author: "Ethan Tsz Hang Kiang @zyklotomic")
@@ -517,7 +522,7 @@ fn main() {
     let mut counter = 1usize;
     while match opts.count {
         None => true,
-        Some(c) => counter < c,
+        Some(c) => counter <= c,
     } && running.load(Ordering::SeqCst) {
         let echo_pkt = EchoPacket { id: 0, sequence: counter as u16 };
         let mut icmphdr = IcmpHdr::new(echo_pkt);
