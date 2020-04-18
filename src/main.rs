@@ -435,7 +435,7 @@ fn recvmsg(sockfd: Socket,
             return Err(Error::new(ErrorKind::Interrupted, ""));
         }
 
-        // Up to 0.01ms accuracy
+        // Up to 0.01ms precision
         std::thread::sleep(Duration::from_nanos(8000));
     }
 
@@ -483,6 +483,8 @@ fn main() {
     // report is misleading since precision is only up to 0.01ms due to sleep
     //
     // 5) Ipv6
+    //
+    // 6) recvmsg() loop spinlock
 
     let matches = clap_app!(ping =>
         (version: "1.0.0")
