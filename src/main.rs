@@ -3,7 +3,8 @@ extern crate clap;
 extern crate ctrlc;
 
 use nix::errno::errno;
-use std::sync::Arc; use byteorder::{ByteOrder, NetworkEndian};
+use std::sync::Arc;
+use byteorder::{ByteOrder, NetworkEndian};
 use std::str::FromStr;
 use std::time::{Instant, Duration};
 use std::net::{ToSocketAddrs, SocketAddr};
