@@ -37,17 +37,15 @@ impl Statistics {
 
     fn add_ping_duration(&mut self, duration: Duration) {
         let micros = duration.as_micros();
+
         if micros < self.min {
             self.min = micros;
-        }
-
-        if micros > self.max {
-            self.max = micros;
+        } else if micros > self.max {
+            self.max = micrors;
         }
 
         self.sum += micros;
-
-        self.square_sum += micros.checked_mul(micros).unwrap();
+        self.square_sum += micros.checked_pow(2).unwrap();
         self.count += 1;
     }
 
