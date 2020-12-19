@@ -2,10 +2,15 @@
 
 use nix::errno::errno;
 use std::io::{Error, ErrorKind};
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
+use std::slice;
 use std::fmt;
 use std::str::FromStr;
+use std::io::{Read, Write};
 use byteorder::{ByteOrder, NetworkEndian};
+
+mod structs;
+use structs::{IcmpHeader, Ipv4Packet, sockaddr_in};
 
 // setsockopt constant
 const IP_RECVTTL: libc::c_int = 12;
@@ -31,7 +36,9 @@ macro_rules! libc_ioerr {
     }
 }
 
-struct Socket { fd: libc::c_int }
+struct Socket {
+    fd: libc::c_int
+}
 
 impl std::io::Write for Socket {
     fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
@@ -78,68 +85,10 @@ impl std::ops::Drop for Socket {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct sockaddr_in {
-    sa_family: libc::sa_family_t,
-    sin_port: [u8; 2],
-    sin_addr: [u8; 4],
-}
-
-impl sockaddr_in {
-    fn new(sockaddr: &SocketAddrV4) -> Self {
-        let mut sin_addr = [0u8; 4];
-        let mut sin_port = [0u8; 2];
-        NetworkEndian::write_u32(&mut sin_addr, u32::from(sockaddr.ip().clone()));
-        NetworkEndian::write_u16(&mut sin_port, sockaddr.port());
-        Self {
-            sa_family: libc::AF_INET as u16,
-            sin_port,
-            sin_addr,
-        }
-    }
-}
-
-#[repr(C)]
-struct IcmpHeader {
-    type_t: u8,
-    code: u8,
-    checksum: u16,
-    id: u16,
-    sequence: u16,
-}
-
-impl IcmpHeader {
-    const ICMP_ECHO: u8 = 8;
-
-    fn new(sequence: u16) -> Self {
-        let mut header = Self {
-            type_t: Self::ICMP_ECHO,
-            code: 0,
-            checksum: 0,
-            id: 0,
-            sequence,
-        };
-        header.checksum = header.calc_checksum();
-        header
-    }
-
-    fn calc_checksum(&self) -> u16 {
-        let mut checksum = (self.type_t as u32)
-            .checked_add((self.code as u32) << 8).unwrap()
-            .checked_add(self.checksum as u32).unwrap()
-            .checked_add(self.id as u32).unwrap()
-            .checked_add(self.sequence as u32).unwrap();
-        checksum = (checksum >> 16) + (checksum & 0xffff);
-        checksum += checksum >> 16;
-        !checksum as u16
-    }
-}
-
 impl Socket {
     fn new() -> Result<Self, std::io::Error> {
         let sockfd = unsafe {
-            libc::socket(libc::AF_INET, libc::SOCK_STREAM, libc::IPPROTO_TCP)
+            libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_ICMP)
         };
 
         if sockfd == -1 {
@@ -163,28 +112,45 @@ impl Socket {
         };
 
         if err == -1 {
-            return Err(libc_ioerr!("Failed to set TTL in setsockopt()"))
+            return Err(libc_ioerr!("setsockopt() failed"))
         }
         Ok(())
     }
 
-    fn connect(&mut self, sockaddr: SocketAddrV4) -> Result<(), std::io::Error> {
-        let addr = sockaddr_in::new(&sockaddr);
-        let addr_ptr = c_const_ptr!(addr, libc::sockaddr);
-        let len = std::mem::size_of::<libc::sockaddr>() as u32;
-        let err = unsafe {
-            libc::connect(self.fd, addr_ptr, len)
-        };
+    fn connect(&mut self, sockaddr: SocketAddr) -> Result<(), std::io::Error> {
+        match sockaddr {
+            SocketAddr::V6(_) =>  Err(libc_ioerr!("Ipv4 only support at the moment!")),
+            SocketAddr::V4(socketaddrv4) => {
+                let addr = sockaddr_in::new(&socketaddrv4);
+                let addr_ptr = c_const_ptr!(addr, libc::sockaddr);
+                let len = std::mem::size_of::<libc::sockaddr>() as u32;
 
-        if err == -1 {
-            Err(libc_ioerr!("connect() failed"))
-        } else {
-            Ok(())
+                let err = unsafe { libc::connect(self.fd, addr_ptr, len) };
+                if err == -1 {
+                    Err(libc_ioerr!("connect() failed"))
+                } else {
+                    Ok(())
+                }
+            },
         }
     }
 }
 
-fn main() {
+fn ping(socket: &mut Socket, icmphdr: &IcmpHeader) {
+    let buf: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            c_const_ptr!(icmphdr, u8),
+            std::mem::size_of::<IcmpHeader>()
+        )
+    };
+    socket.write_all(buf);
+
+    let ipv4_packet_size = std::mem::size_of::<Ipv4Packet>();
+    let mut read_buf = Vec::with_capacity(100);
+    socket.read_to_end(&mut read_buf);
+}
+
+fn main() -> Result<(), std::io::Error> {
     let args = clap_app!(ping =>
                          (version: "1.0.0")
                          (author: "Ethan Tsz Hang Kiang @zyklotomic")
@@ -197,11 +163,10 @@ fn main() {
                          (@arg dest: +required "Target destination. Only Ipv4 supported")
     ).get_matches();
 
-    let ttl = args.value_of("ttl")
+    let ttl: Option<usize> = args.value_of("ttl")
         .map(usize::from_str)
         .transpose()
-        .expect("Failed to parse argument for --ttl (-t)")
-        .unwrap_or(64usize);
+        .expect("Failed to parse argument for --ttl (-t)");
 
     let count = args.value_of("count")
         .map(usize::from_str)
@@ -215,12 +180,28 @@ fn main() {
         .expect("Failed to parse argument for --interval (-i)")
         .unwrap_or(1usize);
 
-    let mut socket = Socket::new().unwrap();
-    socket.setsockopt(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_ICMP).unwrap();
-    socket.setsockopt(libc::SOL_IP, libc::IP_TTL, ttl as i32).unwrap();
-    socket.setsockopt(libc::SOL_IP, IP_RECVTTL, 1);
+    let dest: SocketAddr = args.value_of("dest")
+        .map(|input| format!("{}:0", input).to_socket_addrs())
+        .transpose()
+        .expect("Failed to resolve destintation argument")
+        .map(|mut iter| iter.next())
+        .flatten()
+        .unwrap(); // to_socket_addrs returns Some if non-empty iter
+
+    let mut socket = Socket::new()?;
+
+    if let Some(t) = ttl {
+        socket.setsockopt(libc::SOL_IP, libc::IP_TTL, t as i32)?;
+    }
+    socket.setsockopt(libc::SOL_IP, IP_RECVTTL, 1)?;
+    socket.connect(dest)?;
+
+    let mut icmphdr = IcmpHeader::new();
 
     for _ in 0..count {
-
+        ping(&mut socket, &icmphdr);
+        icmphdr.increment_seq();
     }
+
+    Ok(())
 }
